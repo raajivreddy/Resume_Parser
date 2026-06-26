@@ -1,9 +1,10 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File
 import logging
 from app.utils.config import settings
 from app.models.schemas import ParseResponse
 from app.services.document_service import extract_text_from_upload
 from app.services.parsing_service import parse_resume_text
+from app.utils.exceptions import UnsupportedFormatError, NLPProcessingError
 
 logger = logging.getLogger("resume_parser.api")
 
@@ -35,13 +36,9 @@ async def parse_file(file: UploadFile = File(...)):
         # 1. I/O Bound Task: Extract raw text from the uploaded binary
         raw_text = await extract_text_from_upload(file)
     except ValueError as ve:
-        # 400 Bad Request (e.g., Unsupported file type)
+        # 415 Unsupported Media Type (mapped to UnsupportedFormatError)
         logger.warning(f"File extraction error: {str(ve)}")
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        # 500 Internal Server Error (e.g., LibreOffice subprocess crash)
-        logger.error(f"Failed to read upload: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error during file processing.")
+        raise UnsupportedFormatError(str(ve))
 
     # 2. CPU Bound Task: Run the Transformer NLP pipeline
     # The parsing service is wrapped in a catch-all and guaranteed to return a ParseResponse object
@@ -50,6 +47,6 @@ async def parse_file(file: UploadFile = File(...)):
     # If the parsing pipeline failed gracefully, map it to a RESTful 422 Unprocessable Entity
     if response.status == "error":
         # We return the response model but alter the HTTP status code
-        raise HTTPException(status_code=422, detail=response.message)
+        raise NLPProcessingError(response.message)
         
     return response

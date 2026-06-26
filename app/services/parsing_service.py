@@ -56,8 +56,18 @@ def parse_resume_text(raw_text: str) -> ParseResponse:
         logger.info("Pipeline Step 5: Applying heuristic fallbacks")
         final_dict = apply_heuristics(resolved_data, raw_text, sections)
         
-        # 6. Schema Validation (Cast dict to Pydantic object)
-        logger.info("Pipeline Step 6: Pydantic Validation")
+        # 6. Response Cleanup (Remove nulls and empties)
+        logger.info("Pipeline Step 6: Response Cleanup")
+        for key in ["experience", "education"]:
+            clean_list = []
+            for item in final_dict.get(key, []):
+                cleaned_item = {k: v for k, v in item.items() if v}
+                if cleaned_item:
+                    clean_list.append(cleaned_item)
+            final_dict[key] = clean_list
+            
+        # 7. Schema Validation (Cast dict to Pydantic object)
+        logger.info("Pipeline Step 7: Pydantic Validation")
         resume_data = ResumeData(**final_dict)
         
         return ParseResponse(status="success", data=resume_data, message="Resume parsed successfully")

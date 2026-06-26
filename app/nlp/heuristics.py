@@ -35,6 +35,26 @@ def normalize_skills(skills: List[str]) -> List[str]:
     
     return sorted(list(cleaned_skills))
 
+def extract_name(text: str) -> str | None:
+    """Extracts a probable name from the top lines of the resume."""
+    invalid_keywords = ['@', '+', 'linkedin', 'github', 'http', '.com', 'www.']
+    invalid_phrases = {'software', 'engineer', 'developer', 'data', 'scientist', 'machine', 'learning', 'python', 'ai', 'senior', 'junior', 'lead', 'manager', 'director', 'summary', 'experience', 'education', 'skills', 'profile'}
+    
+    for line in text.split('\n')[:10]:
+        clean_line = line.strip()
+        if not clean_line: continue
+        
+        lower_line = clean_line.lower()
+        if any(bad in lower_line for bad in invalid_keywords):
+            continue
+            
+        words = clean_line.split()
+        if 2 <= len(words) <= 4 and clean_line.replace(' ', '').isalpha() and clean_line.istitle():
+            # Ensure the line doesn't contain common job titles or headers
+            if not any(w.lower() in invalid_phrases for w in words):
+                return clean_line
+    return None
+
 def fallback_experience(text: str) -> List[Dict[str, str]]:
     """Heuristic fallback if NER completely misses the experience section."""
     experiences = []
@@ -54,8 +74,11 @@ def fallback_experience(text: str) -> List[Dict[str, str]]:
             continue
             
         # Infer company: short, mostly title case, happens after a position
-        if len(line) < 40 and line.istitle() and current_exp.get("position") and not current_exp.get("company"):
-            current_exp["company"] = line
+        if current_exp.get("position") and not current_exp.get("company"):
+            if len(line) <= 50 and len(line.split()) <= 6:
+                if not line.startswith("-") and not line.endswith("."):
+                    if line.istitle():
+                        current_exp["company"] = line
 
     if current_exp:
         experiences.append(current_exp)
@@ -95,9 +118,42 @@ def fallback_education(edu: Dict[str, str]) -> Dict[str, str]:
         # 3. Final fallback if no institution keyword exists
         if not split_found and len(parts) >= 4:
             edu["degree"] = " ".join(parts[:3]).strip()
-            edu["institution"] = " ".join(parts[3:]).strip()
-
+            edu["institution"] = " ".join(parts[3:])
+                
     return edu
+
+def is_valid_education(edu: Dict[str, str]) -> bool:
+    """Checks if an education object contains valid degree keywords to prevent false positives."""
+    combined = f"{edu.get('degree', '')} {edu.get('institution', '')}"
+    pattern = r'\b(bachelor|master|phd|b\.?tech|m\.?tech|b\.?e|m\.?e|m\.?s|b\.?s|mba|diploma)\b'
+    return bool(re.search(pattern, combined, re.IGNORECASE))
+
+CANONICAL_SKILLS = {
+    "fastapi": "FastAPI",
+    "ci/cd": "CI/CD",
+    "pytorch": "PyTorch",
+    "sql": "SQL",
+    "aws": "AWS",
+    "gcp": "GCP",
+    "langchain": "LangChain",
+    "llamaindex": "LlamaIndex",
+    "opensearch": "OpenSearch"
+}
+
+def normalize_skills(skills: List[str]) -> List[str]:
+    """
+    Splits, deduplicates, and canonically capitalizes skills.
+    """
+    cleaned_skills = set()
+    for skill_str in skills:
+        # Split merged strings
+        for part in re.split(r'[\n,;/]', skill_str):
+            clean = re.sub(r'[^\w\s+#.-]', '', part).strip()
+            if len(clean) > 1:
+                final_skill = CANONICAL_SKILLS.get(clean.lower(), clean.title())
+                cleaned_skills.add(final_skill)
+    
+    return sorted(list(cleaned_skills))
 
 def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str, sections: Dict[str, str] = None) -> Dict[str, Any]:
     """
@@ -107,7 +163,9 @@ def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str, sections: Dic
     # 1. Contact Heuristics
     contact = resolved_data.get("contact", {})
     
-    # If the NER model didn't find an email, Regex scan the entire raw text
+    if not contact.get("name"):
+        contact["name"] = extract_name(raw_text)
+        
     if not contact.get("email"):
         contact["email"] = extract_email(raw_text)
         
@@ -116,7 +174,8 @@ def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str, sections: Dic
         
     resolved_data["contact"] = contact
 
-    # 2. Education Heuristics (Dates & Merged splits)
+    # 2. Education Heuristics (Dates & Merged splits & Filtering)
+    valid_edus = []
     for i, edu in enumerate(resolved_data.get("education", [])):
         if not edu.get("graduation_year"):
             combined_text = f"{edu.get('degree', '')} {edu.get('institution', '')}"
@@ -124,8 +183,11 @@ def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str, sections: Dic
             if year:
                 edu["graduation_year"] = year
         
-        # Attempt to split merged strings
-        resolved_data["education"][i] = fallback_education(edu)
+        split_edu = fallback_education(edu)
+        if is_valid_education(split_edu):
+            valid_edus.append(split_edu)
+            
+    resolved_data["education"] = valid_edus
 
     # 3. Experience Fallback (If NER returned [])
     if not resolved_data.get("experience") and sections and sections.get("experience"):

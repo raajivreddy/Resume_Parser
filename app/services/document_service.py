@@ -43,6 +43,11 @@ async def extract_text_from_upload(file: UploadFile) -> str:
             
         return text
 
+    except Exception as e:
+        logger.error(f"Extraction crashed: {str(e)}", exc_info=True)
+        from app.utils.exceptions import FileExtractionError
+        raise FileExtractionError("Failed to extract text. Ensure the file is not corrupted or password-protected.")
+
     finally:
         # 12-Factor App methodology: ALWAYS clean up temporary state.
         # This executes even if the extraction throws an exception.
