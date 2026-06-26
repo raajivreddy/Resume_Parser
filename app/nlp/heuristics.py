@@ -15,7 +15,7 @@ def extract_phone(text: str) -> str | None:
 
 def extract_graduation_year(text: str) -> str | None:
     """Extracts a plausible 4-digit year (1980-2030) from an education block."""
-    matches = re.findall(r'\b(19|20)\d{2}\b', text)
+    matches = re.findall(r'\b(?:19|20)\d{2}\b', text)
     if matches:
         # Usually the last year mentioned in an education block is the graduation year
         return matches[-1]
@@ -35,7 +35,71 @@ def normalize_skills(skills: List[str]) -> List[str]:
     
     return sorted(list(cleaned_skills))
 
-def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str) -> Dict[str, Any]:
+def fallback_experience(text: str) -> List[Dict[str, str]]:
+    """Heuristic fallback if NER completely misses the experience section."""
+    experiences = []
+    current_exp = {}
+    titles = ["engineer", "developer", "scientist", "analyst", "intern", "manager", "consultant"]
+    
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line: continue
+        
+        # Infer position: contains keyword, relatively short
+        if any(t in line.lower() for t in titles) and len(line) < 60:
+            if current_exp.get("position"):
+                experiences.append(current_exp)
+                current_exp = {}
+            current_exp["position"] = line
+            continue
+            
+        # Infer company: short, mostly title case, happens after a position
+        if len(line) < 40 and line.istitle() and current_exp.get("position") and not current_exp.get("company"):
+            current_exp["company"] = line
+
+    if current_exp:
+        experiences.append(current_exp)
+    return experiences
+
+def fallback_education(edu: Dict[str, str]) -> Dict[str, str]:
+    degree = edu.get("degree", "")
+
+    # Only attempt splitting if the string looks merged
+    if len(degree.split()) > 4 and not edu.get("institution"):
+
+        # 1. Extract and remove graduation year
+        year_match = re.search(r"\b(?:19|20)\d{2}\b", degree)
+        if year_match:
+            edu["graduation_year"] = year_match.group(0)
+            degree = degree.replace(year_match.group(0), "").strip()
+
+        # 2. Split degree and institution
+        institution_keywords = {
+            "University",
+            "College",
+            "Institute",
+            "School",
+        }
+
+        parts = degree.split()
+
+        split_found = False
+
+        for i, word in enumerate(parts):
+            if word in institution_keywords and i > 0:
+                edu["degree"] = " ".join(parts[: i - 1]).strip()
+                edu["institution"] = " ".join(parts[i - 1 :]).strip()
+                split_found = True
+                break
+
+        # 3. Final fallback if no institution keyword exists
+        if not split_found and len(parts) >= 4:
+            edu["degree"] = " ".join(parts[:3]).strip()
+            edu["institution"] = " ".join(parts[3:]).strip()
+
+    return edu
+
+def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str, sections: Dict[str, str] = None) -> Dict[str, Any]:
     """
     Fills in the data gaps left by the Transformer NER model using targeted Regex rules.
     Deep Learning is used for semantic extraction; Regex is used for pattern extraction.
@@ -52,18 +116,22 @@ def apply_heuristics(resolved_data: Dict[str, Any], raw_text: str) -> Dict[str, 
         
     resolved_data["contact"] = contact
 
-    # 2. Education Heuristics (Dates)
-    # If the model found a Degree but missed the Year, we scan the institution name string
-    # (or we could scan the raw education block text, but for MVP we scan what we have)
-    for edu in resolved_data.get("education", []):
+    # 2. Education Heuristics (Dates & Merged splits)
+    for i, edu in enumerate(resolved_data.get("education", [])):
         if not edu.get("graduation_year"):
-            # Attempt to find a year within the extracted degree or institution string
             combined_text = f"{edu.get('degree', '')} {edu.get('institution', '')}"
             year = extract_graduation_year(combined_text)
             if year:
                 edu["graduation_year"] = year
+        
+        # Attempt to split merged strings
+        resolved_data["education"][i] = fallback_education(edu)
 
-    # 3. Skills Normalization
+    # 3. Experience Fallback (If NER returned [])
+    if not resolved_data.get("experience") and sections and sections.get("experience"):
+        resolved_data["experience"] = fallback_experience(sections["experience"])
+
+    # 4. Skills Normalization
     if "skills" in resolved_data:
         resolved_data["skills"] = normalize_skills(resolved_data["skills"])
 
