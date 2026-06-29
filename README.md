@@ -1,4 +1,4 @@
-# Navtech AI Resume Parser
+# AI Resume Parser
 
 A production-grade NLP service that ingests resumes (PDF, DOCX, DOC) and extracts structured JSON data using a hybrid architecture of HuggingFace Transformers (BERT) and deterministic Regex heuristics.
 
